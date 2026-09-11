@@ -192,8 +192,6 @@ DURATION_MIN (1) --- (M) PROPERTIES
 
 ## Schema
 
-— embed the ERD image; summarize the five roles and your key design decisions.---
-
 ## ER Diagram
 
 ```mermaid
