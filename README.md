@@ -248,11 +248,11 @@ int duration_min_id PK
 int viewing_id FK
 }
  
-RENTERS ||--o{ VIEWINGS : schedules
-PROPERTIES ||--o{ VIEWINGS : has
-PROPERTIES ||--o{ LISTING_AMENITIES : includes
-AMENITIES ||--o{ LISTING_AMENITIES : assigned_to
-DURATION_MIN ||--o{ PROPERTIES : defines
+	RENTERS||--o{VIEWINGS:"Schedules"
+	PROPERTIES||--o{VIEWINGS:"Has"
+	PROPERTIES||--o{LISTING_AMENITIES:"Includes"
+	AMENITIES||--o{LISTING_AMENITIES:"assigned_to"
+	DURATION_MIN||--o{PROPERTIES:"defines"
 ```
 
 ---
