@@ -1,0 +1,18 @@
+# Memo to the Rental Marketplace Dashboard Team
+
+  During a review of the renter viewing data, I found that the dashboard is underreporting certain viewing outcomes.
+  The report was intended to identify viewings that were not caused by a renter no-show,
+  but it unintentionally excluded many viewings where no reason had been recorded.
+  In our system, most attended and disputed viewings have a blank reason field because no cancellation occurred.
+  These records should still be considered valid viewings, but they were omitted from the dashboard's calculation.
+
+  The underlying data shows that there are three groups of viewings: those cancelled because of a renter no-show,
+  those cancelled for another reason, and those where no cancellation reason exists because the viewing was completed or disputed.
+   The dashboard only counted the second group and ignored the third group entirely.
+   As a result, the number presented to users was lower than the true total. The issue does not come from bad data entered by renters or agents;
+    it comes from the reporting logic treating blank values as if they did not exist.
+
+  I recommend updating the dashboard so that viewings with no recorded cancellation reason are included
+  whenever the goal is to count all viewings that were not renter no-shows. Once the logic is corrected,
+  the report should be refreshed and any business decisions based on the previous numbers should be reviewed.
+   This will ensure that property managers, agents, and analysts are working from a complete and accurate picture of renter activity.
