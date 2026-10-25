@@ -451,3 +451,403 @@ erDiagram
 ```
 
 ---
+
+---
+
+## Query Catalogue: Units 3 and 4
+
+These queries use the EX 603 rental reference dataset, where `renters` are the actors, `properties` are the producers, and `viewings` are the events. The main performance metric is `duration_min`, and a viewing with `viewing_status = 'disputed'` is treated as a failure.
+
+### Unit 3: SQL behavior and data-quality checks
+
+#### 3.1.1 Plain-language property categories
+
+**Business question:** How can property rent and viewing measurements be translated into categories that a nontechnical reader can understand?
+
+```sql
+SELECT
+    v.viewing_id,
+    r.renter_name,
+    p.property_id,
+    p.property_label,
+    p.monthly_rent,
+    v.travel_km,
+    v.interest_score,
+    CASE
+        WHEN v.travel_km < 10 THEN 'Nearby'
+        WHEN v.travel_km < 20 THEN 'Moderate Distance'
+        ELSE 'Long Distance'
+    END AS travel_category,
+    CASE
+        WHEN v.interest_score >= 2.0 THEN 'Highly Interested'
+        WHEN v.interest_score >= 1.5 THEN 'Interested'
+        ELSE 'Low Interest'
+    END AS interest_level,
+    CASE
+        WHEN p.monthly_rent < 1000 THEN 'Budget'
+        WHEN p.monthly_rent < 2500 THEN 'Mid-Range'
+        ELSE 'Premium'
+    END AS rent_category
+FROM viewings v
+JOIN renters r ON r.renter_id = v.renter_id
+JOIN properties p ON p.property_id = v.property_id
+ORDER BY v.viewing_id;
+```
+
+#### 3.1.2 NULL comparison that silently omits rows
+
+**Business question:** How many viewings have a recorded reason other than `Renter no show`, and how many rows are silently excluded because no reason was recorded?
+
+```sql
+SELECT
+    (SELECT COUNT(*)
+     FROM viewings
+     WHERE no_show_reason != 'Renter no show') AS first_count,
+    (SELECT COUNT(*)
+     FROM viewings
+     WHERE no_show_reason IS NULL) AS omitted_count,
+    (SELECT COUNT(*)
+     FROM viewings) AS table_total;
+```
+
+#### 3.1.3 Corrected NULL-aware filter
+
+**Business question:** How many viewings were not marked as renter no-shows, including viewings with no cancellation reason?
+
+```sql
+SELECT COUNT(*) AS corrected_count
+FROM viewings
+WHERE no_show_reason != 'Renter no show'
+   OR no_show_reason IS NULL;
+```
+
+#### 3.1.4 SELECT alias used too early
+
+**Business question:** Which properties are in the Premium rent category?
+
+The following query intentionally demonstrates the alias error because `WHERE` is evaluated before the `SELECT` alias is created.
+
+```sql
+SELECT
+    property_id,
+    property_label,
+    monthly_rent,
+    CASE
+        WHEN monthly_rent < 1000 THEN 'Budget'
+        WHEN monthly_rent < 2500 THEN 'Mid-Range'
+        ELSE 'Premium'
+    END AS rent_category
+FROM properties
+WHERE rent_category = 'Premium';
+```
+
+#### 3.1.5 Correct alias rewrite by repeating the expression
+
+**Business question:** Which properties are in the Premium rent category?
+
+```sql
+SELECT
+    property_id,
+    property_label,
+    monthly_rent,
+    CASE
+        WHEN monthly_rent < 1000 THEN 'Budget'
+        WHEN monthly_rent < 2500 THEN 'Mid-Range'
+        ELSE 'Premium'
+    END AS rent_category
+FROM properties
+WHERE CASE
+          WHEN monthly_rent < 1000 THEN 'Budget'
+          WHEN monthly_rent < 2500 THEN 'Mid-Range'
+          ELSE 'Premium'
+      END = 'Premium';
+```
+
+#### 3.1.6 Correct alias rewrite with a CTE
+
+**Business question:** Which properties are in the Premium rent category, using a reusable calculated column?
+
+```sql
+WITH property_rent_categories AS (
+    SELECT
+        property_id,
+        property_label,
+        monthly_rent,
+        CASE
+            WHEN monthly_rent < 1000 THEN 'Budget'
+            WHEN monthly_rent < 2500 THEN 'Mid-Range'
+            ELSE 'Premium'
+        END AS rent_category
+    FROM properties
+)
+SELECT *
+FROM property_rent_categories
+WHERE rent_category = 'Premium';
+```
+
+#### 3.1.7 Two-step question using IN
+
+**Business question:** Which renters were involved in at least one disputed viewing?
+
+```sql
+SELECT renter_id, renter_name
+FROM renters
+WHERE renter_id IN (
+    SELECT renter_id
+    FROM viewings
+    WHERE viewing_status = 'disputed'
+);
+```
+
+#### 3.1.8 Two-step question using a CTE and JOIN
+
+**Business question:** Which distinct renters were involved in disputed viewings?
+
+```sql
+WITH disputed_renters AS (
+    SELECT DISTINCT
+        r.renter_id,
+        r.renter_name
+    FROM renters r
+    JOIN viewings v ON v.renter_id = r.renter_id
+    WHERE v.viewing_status = 'disputed'
+)
+SELECT *
+FROM disputed_renters;
+```
+
+#### 3.1.9 Two-step question using EXISTS
+
+**Business question:** Which renters have at least one disputed viewing?
+
+```sql
+SELECT
+    r.renter_id,
+    r.renter_name
+FROM renters r
+WHERE EXISTS (
+    SELECT 1
+    FROM viewings v
+    WHERE v.renter_id = r.renter_id
+      AND v.viewing_status = 'disputed'
+);
+```
+
+#### 3.1.10 CASE-based disputed-renter classification
+
+**Business question:** Which renters can be classified as having a disputed viewing?
+
+```sql
+SELECT renter_id, renter_name
+FROM (
+    SELECT
+        r.renter_id,
+        r.renter_name,
+        CASE
+            WHEN EXISTS (
+                SELECT 1
+                FROM viewings v
+                WHERE v.renter_id = r.renter_id
+                  AND v.viewing_status = 'disputed'
+            ) THEN 'Has Disputed Viewing'
+            ELSE 'No Disputed Viewing'
+        END AS dispute_status
+    FROM renters r
+) AS classified_renters
+WHERE dispute_status = 'Has Disputed Viewing';
+```
+
+### Unit 4: Platform measurement and leadership breakdowns
+
+#### 4.1.1 Overall platform statistics
+
+**Business question:** Across the entire platform, how many viewings occurred, how much viewing time was recorded, what was the average and range, and how many distinct renters participated?
+
+```sql
+SELECT
+    COUNT(*) AS total_events,
+    ROUND(SUM(duration_min), 2) AS total_viewing_minutes,
+    ROUND(AVG(duration_min), 2) AS average_viewing_minutes,
+    MIN(duration_min) AS shortest_viewing_minutes,
+    MAX(duration_min) AS longest_viewing_minutes,
+    COUNT(DISTINCT renter_id) AS distinct_renters
+FROM viewings;
+```
+
+#### 4.1.2 Activity and average duration by property
+
+**Business question:** Which properties received the most viewing activity, and what was the average viewing duration for each property?
+
+```sql
+SELECT
+    p.property_id,
+    p.property_label,
+    p.city,
+    COUNT(v.viewing_id) AS event_count,
+    ROUND(AVG(v.duration_min), 2) AS average_duration_min
+FROM properties p
+LEFT JOIN viewings v ON v.property_id = p.property_id
+GROUP BY p.property_id, p.property_label, p.city
+ORDER BY event_count DESC, p.property_id;
+```
+
+#### 4.1.3 Properties with enough volume for comparison
+
+**Business question:** Which properties have at least 10 viewing events, making their average duration more meaningful?
+
+```sql
+SELECT
+    p.property_id,
+    p.property_label,
+    p.city,
+    COUNT(v.viewing_id) AS event_count,
+    ROUND(AVG(v.duration_min), 2) AS average_duration_min
+FROM properties p
+JOIN viewings v ON v.property_id = p.property_id
+GROUP BY p.property_id, p.property_label, p.city
+HAVING COUNT(v.viewing_id) >= 10
+ORDER BY event_count DESC, p.property_id;
+```
+
+#### 4.1.4 Property performance by booking region
+
+**Business question:** How do viewing activity and duration vary for each property across booking regions?
+
+```sql
+SELECT
+    p.property_id,
+    p.property_label,
+    v.booking_city AS region,
+    COUNT(*) AS event_count,
+    ROUND(SUM(v.duration_min), 2) AS total_duration_min,
+    ROUND(AVG(v.duration_min), 2) AS average_duration_min,
+    MIN(v.duration_min) AS minimum_duration_min,
+    MAX(v.duration_min) AS maximum_duration_min,
+    COUNT(DISTINCT v.renter_id) AS distinct_renters
+FROM viewings v
+JOIN properties p ON p.property_id = v.property_id
+GROUP BY p.property_id, p.property_label, v.booking_city
+ORDER BY p.property_label, event_count DESC, v.booking_city;
+```
+
+#### 4.2 Part A: Total events and failures in one pass
+
+**Business question:** For each property, how many total viewings occurred, how many were disputed, and what percentage of its viewings were disputed?
+
+```sql
+SELECT
+    p.property_id,
+    p.property_label,
+    p.city AS property_city,
+    COUNT(v.viewing_id) AS total_events,
+    SUM(
+        CASE
+            WHEN v.viewing_status = 'disputed' THEN 1
+            ELSE 0
+        END
+    ) AS disputed_events,
+    ROUND(
+        100.0 * SUM(
+            CASE
+                WHEN v.viewing_status = 'disputed' THEN 1
+                ELSE 0
+            END
+        ) / NULLIF(COUNT(v.viewing_id), 0),
+        2
+    ) AS disputed_rate_percent
+FROM properties p
+LEFT JOIN viewings v ON v.property_id = p.property_id
+GROUP BY p.property_id, p.property_label, p.city
+ORDER BY disputed_events DESC, total_events DESC, p.property_id;
+```
+
+#### 4.2 Part B: Regional subtotals and platform grand total
+
+**Business question:** How many total and disputed viewing events occurred in each booking region, and what are the platform-wide totals?
+
+```sql
+SELECT
+    CASE
+        WHEN GROUPING(booking_city) = 1 THEN 'All Regions'
+        ELSE booking_city
+    END AS region,
+    COUNT(*) AS total_viewing_events,
+    SUM(
+        CASE
+            WHEN viewing_status = 'disputed' THEN 1
+            ELSE 0
+        END
+    ) AS disputed_viewing_events,
+    CASE
+        WHEN GROUPING(booking_city) = 1 THEN 'Platform Grand Total'
+        ELSE 'Regional Subtotal'
+    END AS row_type
+FROM viewings
+GROUP BY GROUPING SETS (
+    (booking_city),
+    ()
+)
+ORDER BY GROUPING(booking_city), region;
+```
+
+#### 4.2 Part C: High-volume property baseline
+
+**Business question:** Among properties with at least 10 viewing events, what is the normal baseline for viewing volume and disputed-event performance?
+
+```sql
+WITH producer_performance AS (
+    SELECT
+        p.property_id,
+        p.property_label,
+        COUNT(v.viewing_id) AS total_events,
+        SUM(
+            CASE
+                WHEN v.viewing_status = 'disputed' THEN 1
+                ELSE 0
+            END
+        ) AS disputed_events,
+        ROUND(AVG(v.duration_min), 2) AS average_duration_min
+    FROM properties p
+    JOIN viewings v ON v.property_id = p.property_id
+    GROUP BY p.property_id, p.property_label
+)
+SELECT
+    COUNT(*) AS high_volume_property_count,
+    ROUND(AVG(total_events), 2) AS average_events_per_property,
+    ROUND(AVG(disputed_events), 2) AS average_disputes_per_property,
+    SUM(total_events) AS combined_events,
+    SUM(disputed_events) AS combined_disputed_events,
+    ROUND(
+        100.0 * SUM(disputed_events)
+        / NULLIF(SUM(total_events), 0),
+        2
+    ) AS high_volume_disputed_rate_percent,
+    ROUND(AVG(average_duration_min), 2) AS average_property_duration_min
+FROM producer_performance
+WHERE total_events >= 10;
+```
+
+#### 4.3 Leadership failure-rate check
+
+**Business question:** What is the platform's true disputed-viewing rate, and which properties should leadership investigate first?
+
+```sql
+SELECT
+    COUNT(*) AS total_viewings,
+    SUM(
+        CASE
+            WHEN viewing_status = 'disputed' THEN 1
+            ELSE 0
+        END
+    ) AS disputed_viewings,
+    ROUND(
+        100.0 * SUM(
+            CASE
+                WHEN viewing_status = 'disputed' THEN 1
+                ELSE 0
+            END
+        ) / COUNT(*),
+        2
+    ) AS platform_failure_rate_percent
+FROM viewings;
+```
