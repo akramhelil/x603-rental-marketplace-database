@@ -15,6 +15,7 @@ Thumbs.db
 *.pem
 *.key
 *.cert
+*.venv
 
 # --- IDEs and Editors ---
 .vscode/
